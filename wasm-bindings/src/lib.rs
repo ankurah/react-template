@@ -92,7 +92,7 @@ pub async fn ready() -> Result<(), JsValue> {
 
 // Generate MessageScrollManager in bindings crate (keeps model platform-agnostic)
 use ankurah_template_model::{MessageView, MessageLiveQuery};
-virtual_scroll::generate_scroll_manager!(
+ankurah_virtual_scroll::generate_scroll_manager!(
     Message,
     MessageView,
     MessageLiveQuery,
