@@ -43,7 +43,7 @@ pub async fn start() -> Result<(), JsValue> {
     let hostname = location
         .hostname()
         .map_err(|e| JsValue::from_str(&format!("Failed to get hostname: {:?}", e)))?;
-    let ws_url = format!("ws://{}:9797", hostname);
+    let ws_url = format!("ws://{}:9898", hostname);
 
     let connector = WebsocketClient::new(node.clone(), &ws_url)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -89,3 +89,12 @@ pub async fn ready() -> Result<(), JsValue> {
 
 // Just export the models and basic primitives
 // All business logic should be in the React app
+
+// Generate MessageScrollManager in bindings crate (keeps model platform-agnostic)
+use {{crate_name}}_model::{MessageView, MessageLiveQuery};
+ankurah_virtual_scroll::generate_scroll_manager!(
+    Message,
+    MessageView,
+    MessageLiveQuery,
+    timestamp_field = "timestamp"
+);

@@ -9,17 +9,17 @@ import {
     JsValueMut,
 } from "{{project-name}}-wasm-bindings";
 import { signalObserver } from "../utils";
-import { ChatScrollManager } from "../ChatScrollManager";
 import "./MessageInput.css";
 
 interface MessageInputProps {
     room: RoomView;
     currentUser: UserView | null;
     editingMessageMut: JsValueMut<MessageView | null>;
-    manager: ChatScrollManager | null;
+    messages: MessageView[];
+    onMessageSent?: () => void;
 }
 
-export const MessageInput: React.FC<MessageInputProps> = signalObserver(({ room, currentUser, editingMessageMut, manager }) => {
+export const MessageInput: React.FC<MessageInputProps> = signalObserver(({ room, currentUser, editingMessageMut, messages, onMessageSent }) => {
     const [messageInput, setMessageInput] = useState("");
     const connectionState = ws_client().connection_state.value?.value();
     const editMsg = editingMessageMut.get();
@@ -64,9 +64,7 @@ export const MessageInput: React.FC<MessageInputProps> = signalObserver(({ room,
             console.log("Message created:", msg);
             await transaction.commit();
             setMessageInput("");
-
-            // Always jump to live mode when sending a new message
-            await manager?.jumpToLive();
+            onMessageSent?.();
         }
     };
 
@@ -80,34 +78,32 @@ export const MessageInput: React.FC<MessageInputProps> = signalObserver(({ room,
             setMessageInput("");
         } else if (e.key === "ArrowUp" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            if (!currentUser || !manager) return;
+            if (!currentUser || messages.length === 0) return;
 
-            const allMessages = manager.items;
             const userId = currentUser.id;
             // Find next older message by current user
             const currentIdx = editMsg
-                ? allMessages.findIndex(msg => msg.id.equals(editMsg.id))
-                : allMessages.length;
+                ? messages.findIndex(msg => msg.id.equals(editMsg.id))
+                : messages.length;
 
             // Search backward from current position
             for (let i = currentIdx - 1; i >= 0; i--) {
-                if (allMessages[i].user.id.equals(userId)) {
-                    editingMessageMut.set(allMessages[i]);
+                if (messages[i].user.id.equals(userId)) {
+                    editingMessageMut.set(messages[i]);
                     return;
                 }
             }
         } else if (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey) && editMsg) {
             e.preventDefault();
-            if (!currentUser || !manager) return;
+            if (!currentUser || messages.length === 0) return;
 
-            const allMessages = manager.items;
             const userId = currentUser.id;
-            const currentIdx = allMessages.findIndex(msg => msg.id.equals(editMsg.id));
+            const currentIdx = messages.findIndex(msg => msg.id.equals(editMsg.id));
 
             // Search forward from current position
-            for (let i = currentIdx + 1; i < allMessages.length; i++) {
-                if (allMessages[i].user.id.equals(userId)) {
-                    editingMessageMut.set(allMessages[i]);
+            for (let i = currentIdx + 1; i < messages.length; i++) {
+                if (messages[i].user.id.equals(userId)) {
+                    editingMessageMut.set(messages[i]);
                     return;
                 }
             }

@@ -1,16 +1,10 @@
-import { useState, useEffect } from "react";
-import { useObserve, User, ctx, EntityId, UserView, JsValueMut, JsValueRead } from "{{project-name}}-wasm-bindings";
+import React, { useState, useEffect } from "react";
+import { createAnkurahReactHooks } from "@ankurah/react-hooks";
+import { ReactObserver, User, ctx, EntityId, UserView, JsValueMut, JsValueRead } from "{{project-name}}-wasm-bindings";
 
-export function signalObserver<T>(fc: React.FC<T>): React.FC<T> {
-    return (props: T) => {
-        const observer = useObserve();
-        try {
-            return fc(props);
-        } finally {
-            observer.finish();
-        }
-    };
-}
+// Create hooks bound to WASM bindings
+const { useObserve, signalObserver } = createAnkurahReactHooks({ React, ReactObserver });
+export { useObserve, signalObserver };
 
 export function useAsync<T>(fn: () => Promise<T>, deps: React.DependencyList): T | null {
     const [value, setValue] = useState<T | null>(null);
