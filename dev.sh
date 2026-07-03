@@ -295,12 +295,16 @@ do_start() {
         track_child "$!"
 
         # -- wasm: cargo-watch rebuilds on change (building: wasm-pack -> ready)-
-        echo "[wasm] Starting watcher..."
-        update_status wasm "starting"
+        # pkg was already built by the preflight, so `--postpone` skips the
+        # redundant startup rebuild — which otherwise races Vite's first resolve
+        # of the pkg import and spams "Failed to resolve import". The watcher
+        # still rebuilds on subsequent source changes.
+        echo "[wasm] Watching for changes (initial build done in preflight)..."
+        update_status wasm "ready"
         (
             cd "$WASM_PATH"
             export STATUS_PREFIX="$sf"
-            exec cargo watch -i pkg \
+            exec cargo watch --postpone -i pkg \
                 -s 'f="$STATUS_PREFIX.wasm.status"; printf "%s\n" "building: wasm-pack" > "$f.tmp" && mv -f "$f.tmp" "$f"; if wasm-pack build --target web --dev; then printf "%s\n" "ready" > "$f.tmp" && mv -f "$f.tmp" "$f"; else printf "%s\n" "failed: wasm-pack" > "$f.tmp" && mv -f "$f.tmp" "$f"; fi'
         ) &
         track_child "$!"
