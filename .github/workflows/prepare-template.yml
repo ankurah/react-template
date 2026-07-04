@@ -127,7 +127,10 @@ jobs:
                   else
                     git checkout -B main
                   fi
-                  rsync -a --delete --exclude '.git/' /tmp/prepared/ ./
+                  # --checksum: sync by content, not size+mtime. A prior promotion
+                  # silently dropped same-byte-size edits (e.g. a port 9797->9898
+                  # change) because rsync's default quick check skipped them.
+                  rsync -a --checksum --delete --exclude '.git/' /tmp/prepared/ ./
                   rm -rf .github
                   git config user.name "ankurah-bot"
                   git config user.email "infra@ankurah.dev"

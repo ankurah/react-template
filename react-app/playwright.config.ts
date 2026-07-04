@@ -1,5 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// dev.sh randomizes ports and exports SERVER_PORT / VITE_PORT; honor them if set,
+// otherwise fall back to fixed defaults (fine for isolated CI runs).
+const SERVER_PORT = process.env.SERVER_PORT || '9898';
+const VITE_PORT = process.env.VITE_PORT || '5173';
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
@@ -8,7 +13,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${VITE_PORT}`,
     trace: 'on-first-retry',
   },
   projects: [
@@ -21,15 +26,16 @@ export default defineConfig({
     {
       command: 'cargo run -p ankurah-template-server --release',
       cwd: '..',
-      port: 9898,
+      port: parseInt(SERVER_PORT),
+      env: { SERVER_PORT },
       reuseExistingServer: !process.env.CI,
       timeout: 180000,
     },
     {
       command: 'npm run dev',
-      port: 5173,
+      port: parseInt(VITE_PORT),
+      env: { VITE_PORT, VITE_SERVER_PORT: SERVER_PORT },
       reuseExistingServer: !process.env.CI,
     },
   ],
 });
-

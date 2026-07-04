@@ -23,7 +23,9 @@ async fn main() -> Result<()> {
     ensure_general_room(&node).await?;
 
     let mut server = WebsocketServer::new(node);
-    server.run("0.0.0.0:9898").await?;
+    // Port comes from dev.sh (randomized to avoid collisions); default for direct runs.
+    let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "9898".to_string());
+    server.run(&format!("0.0.0.0:{}", port)).await?;
 
     Ok(())
 }

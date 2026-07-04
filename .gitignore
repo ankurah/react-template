@@ -17,6 +17,11 @@ react-app/package-lock.json
 # Local config
 .cargo/
 
+# Dev runner (local, per-checkout state)
+.dev-ports
+.dev-pid
+.dev-log
+
 # IDEs
 .vscode/
 .idea/

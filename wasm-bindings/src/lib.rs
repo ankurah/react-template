@@ -37,13 +37,18 @@ pub async fn start() -> Result<(), JsValue> {
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let node = Node::new(Arc::new(storage_engine), PermissiveAgent::new());
 
-    // Build WebSocket URL based on current window location
+    // Connect to the same origin the app was served from; the dev server (Vite)
+    // proxies /ws to the backend, so the randomized server port is never hard-coded here.
     let window = window().ok_or_else(|| JsValue::from_str("No window available"))?;
     let location = window.location();
-    let hostname = location
-        .hostname()
-        .map_err(|e| JsValue::from_str(&format!("Failed to get hostname: {:?}", e)))?;
-    let ws_url = format!("ws://{}:9898", hostname);
+    let host = location
+        .host()
+        .map_err(|e| JsValue::from_str(&format!("Failed to get host: {:?}", e)))?;
+    let protocol = location
+        .protocol()
+        .map_err(|e| JsValue::from_str(&format!("Failed to get protocol: {:?}", e)))?;
+    let ws_scheme = if protocol == "https:" { "wss" } else { "ws" };
+    let ws_url = format!("{}://{}", ws_scheme, host);
 
     let connector = WebsocketClient::new(node.clone(), &ws_url)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
