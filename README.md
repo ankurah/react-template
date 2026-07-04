@@ -29,7 +29,7 @@ The server will:
 
 - Initialize Sled storage at `~/.{{project-name}}/`
 - Create a "General" chat room
-- Listen for WebSocket connections on `127.0.0.1:9797`
+- Listen for WebSocket connections on `127.0.0.1:9898`
 
 ### 2. Build the WASM bindings
 

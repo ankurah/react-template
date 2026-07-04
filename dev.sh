@@ -8,9 +8,9 @@
 #   https://github.com/synestheticsystems/sutra/blob/main/docs/INTEGRATION.md
 #
 # Units:
-#   server  cargo run --release -p {{project-name}}-server   (port 9898)
+#   server  cargo run --release -p {{project-name}}-server   (randomized port)
 #   wasm    cargo watch -> wasm-pack build --target web --dev (no port)
-#   react   bun run dev                                       (port 5173)
+#   react   bun run dev                                       (randomized port; proxies /ws)
 #
 # Usage: ./dev.sh [--stop|--restart|--status|--logs|--build|--list|--stop-all|--help]
 
@@ -37,9 +37,16 @@ LOG_FILE="$SCRIPT_DIR/.dev-log"
 WASM_PATH="$SCRIPT_DIR/wasm-bindings"
 FRONTEND_PATH="$SCRIPT_DIR/react-app"
 
-# The client hard-codes ws://<host>:9898 and Vite serves 5173; ports are fixed.
-SERVER_PORT=9898
-REACT_PORT=5173
+# Ports are randomized (server = even, react = even+1) to avoid collisions with
+# other local services, and kept sticky across restarts in .dev-ports. They are
+# propagated to the app: the server binds $SERVER_PORT, and Vite serves $REACT_PORT
+# and proxies /ws to the backend. select_ports() (below) fills these in.
+PORTS_FILE="$SCRIPT_DIR/.dev-ports"
+PORT_RANGE_MIN=10000
+PORT_RANGE_MAX=19998
+MAX_PORT_ATTEMPTS=50
+SERVER_PORT=""
+REACT_PORT=""
 
 # --- Registry key: sha256(SCRIPT_DIR), stable per checkout ----------------
 # Derived from the path (not the project name) so every generated project — and
@@ -128,12 +135,63 @@ require_command() {
     fi
 }
 
-warn_if_port_busy() {
-    local port=$1 label=$2
-    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || tcp_open "$port"; then
-        echo -e "${YELLOW}Warning: port $port ($label) is already in use.${NC}" >&2
-        echo -e "${DIM}  Free it first, or this unit may fail to bind.${NC}" >&2
+# --- Port selection (randomized, sticky) ----------------------------------
+# Availability check: prefer an actual bind test (node) to avoid a TOCTOU race;
+# fall back to a TCP connect probe when node isn't around.
+ports_available() {
+    if command -v node >/dev/null 2>&1; then
+        node -e "
+            const net = require('net');
+            const ports = [$1, $2];
+            const servers = ports.map(() => net.createServer());
+            const closeAll = () => servers.forEach(s => { try { s.close(); } catch (e) {} });
+            let ok = 0;
+            servers.forEach((s, i) => {
+                s.once('error', () => { closeAll(); process.exit(1); });
+                s.once('listening', () => { if (++ok === servers.length) { closeAll(); process.exit(0); } });
+                s.listen(ports[i], '0.0.0.0');
+            });
+        " >/dev/null 2>&1
+    else
+        ! tcp_open "$1" && ! tcp_open "$2"
     fi
+}
+
+random_even_port() {
+    local span=$(( (PORT_RANGE_MAX - PORT_RANGE_MIN) / 2 ))
+    echo $(( PORT_RANGE_MIN + (RANDOM % span) * 2 ))
+}
+
+# Propagate to subprocesses: the server binds SERVER_PORT; Vite serves REACT_PORT
+# (VITE_PORT) and proxies /ws to the backend (VITE_SERVER_PORT).
+export_ports() {
+    export SERVER_PORT REACT_PORT VITE_PORT="$REACT_PORT" VITE_SERVER_PORT="$SERVER_PORT"
+}
+
+select_ports() {
+    # Reuse sticky ports from a previous run if they're still free.
+    if [ -f "$PORTS_FILE" ]; then
+        SERVER_PORT="$(get_file_value "$PORTS_FILE" SERVER_PORT)"
+        REACT_PORT="$(get_file_value "$PORTS_FILE" REACT_PORT)"
+        if [ -n "$SERVER_PORT" ] && [ -n "$REACT_PORT" ] && ports_available "$SERVER_PORT" "$REACT_PORT"; then
+            export_ports; return 0
+        fi
+        SERVER_PORT=""; REACT_PORT=""
+    fi
+    # Otherwise pick a fresh free pair (server even, react = even + 1).
+    local i base
+    for i in $(seq 1 "$MAX_PORT_ATTEMPTS"); do
+        base="$(random_even_port)"
+        if ports_available "$base" "$((base + 1))"; then
+            SERVER_PORT="$base"; REACT_PORT="$((base + 1))"; break
+        fi
+    done
+    if [ -z "$SERVER_PORT" ] || [ -z "$REACT_PORT" ]; then
+        echo -e "${RED}Error: could not find a free port pair in ${PORT_RANGE_MIN}-${PORT_RANGE_MAX}${NC}" >&2
+        exit 1
+    fi
+    printf 'SERVER_PORT=%s\nREACT_PORT=%s\n' "$SERVER_PORT" "$REACT_PORT" > "$PORTS_FILE"
+    export_ports
 }
 
 format_elapsed() {
@@ -368,6 +426,8 @@ do_start() {
 # --- Presentation ---------------------------------------------------------
 show_status() {
     local started now elapsed pid
+    SERVER_PORT="$(get_file_value "$REGISTRY_FILE" SERVER_PORT)"
+    REACT_PORT="$(get_file_value "$REGISTRY_FILE" REACT_PORT)"
     started="$(get_file_value "$REGISTRY_FILE" STARTED)"
     started="${started:-$(date +%s)}"
     now="$(date +%s)"
@@ -400,8 +460,9 @@ cmd_start() {
     echo ""
     echo -e "${BOLD}Starting {{project-name}} dev environment${NC}"
     echo ""
-    warn_if_port_busy "$SERVER_PORT" server
-    warn_if_port_busy "$REACT_PORT" react
+    select_ports
+    echo -e "  ${DIM}Ports:${NC} server=$SERVER_PORT  react=$REACT_PORT  ${DIM}(randomized; sticky in .dev-ports)${NC}"
+    echo ""
 
     do_preflight
     echo -e "${BLUE}[start]${NC} Launching supervisor (server + wasm watcher + react)..."
