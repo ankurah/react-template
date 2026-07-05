@@ -11,17 +11,21 @@ default = ["wasm"]
 wasm = []
 
 [dependencies]
-ankurah = { version = "=0.8.1", features = ["derive", "wasm"] }
-ankurah-signals = { version = "=0.8.1", features = ["wasm", "react", "jsvalue"] }
-ankurah-websocket-client-wasm = { version = "=0.8.1" }
-ankurah-storage-indexeddb-wasm = { version = "=0.8.1" }
+ankurah = { version = "=0.9.0", features = ["derive", "wasm"] }
+ankurah-signals = { version = "=0.9.0", features = ["wasm", "react", "jsvalue"] }
+ankurah-websocket-client-wasm = { version = "=0.9.0" }
+ankurah-storage-indexeddb-wasm = { version = "=0.9.0" }
 ankurah-template-model = { path = "../model", features = ["wasm"] }
 
 # Virtual scroll for pagination
-ankurah-virtual-scroll = { version = "0.8.0", features = ["wasm"] }
-wasm-bindgen = "0.2.84"
-wasm-bindgen-futures = "0.4.42"
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+ankurah-virtual-scroll = { version = "0.9.0", features = ["wasm"] }
+# Pin the wasm-bindgen family exactly: wasm-bindgen >=0.2.126 breaks
+# ankurah-signals' react.rs (WasmPtr mismatch). Cargo.lock is gitignored, so a
+# fresh resolve would otherwise pick the latest and fail to build.
+wasm-bindgen = "=0.2.105"
+wasm-bindgen-futures = "=0.4.55"
+js-sys = "=0.3.82"
+web-sys = { version = "=0.3.82", features = ["Window", "Location"] }
 wasm-logger = "0.2.0"
 tracing = "0.1.40"
 tracing-wasm = "0.2.1"
@@ -31,8 +35,12 @@ send_wrapper = { version = "0.6.0" }
 tokio = { version = "1.39.0", features = ["sync"] }
 lazy_static = "1.4.0"
 once_cell = "1.19.0"
-##### patch - something is wrong with the uuid crate for wasm
+##### wasm RNG backends. Cargo.lock is gitignored, so generated projects resolve
+##### fresh and must pin both getrandom majors present in the tree:
+#####  - 0.3 line (via uuid): "wasm_js" feature + the getrandom_backend cfg in .cargo/config.toml
+#####  - 0.2 line (via ankurah-core -> rand 0.8): the "js" backend feature
 getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 ######
 
 [package.metadata.wasm-pack.profile.dev.wasm-bindgen]
