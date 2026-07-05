@@ -5,5 +5,14 @@ exclude = [
   "react-app/public/sounds/notification.mp3",
 ]
 
+# Storage engine for the durable (server) node. Choose at generate time, e.g.
+#   cargo generate ... --define storage=postgres
+# Postgres runs in a Docker container that dev.sh manages on a randomized port.
+[placeholders.storage]
+type = "string"
+prompt = "Storage engine for the durable (server) node"
+choices = ["sled", "postgres"]
+default = "sled"
+
 [hooks]
 post = ["post-message.rhai"]

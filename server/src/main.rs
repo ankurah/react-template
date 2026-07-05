@@ -1,17 +1,42 @@
 use ankurah::{policy::DEFAULT_CONTEXT as c, Node, PermissiveAgent};
-use ankurah_storage_sled::SledStorageEngine;
 use ankurah_template_model::{Room, RoomView};
 use ankurah_websocket_server::WebsocketServer;
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{info, Level};
 
+#[cfg(all(feature = "sled", not(feature = "postgres")))]
+use ankurah_storage_sled::SledStorageEngine;
+#[cfg(feature = "postgres")]
+use ankurah_storage_postgres::Postgres;
+
+// Storage engine selected at generate time (the crate's default feature).
+// dev.sh reads that choice back to decide whether to run a Postgres container.
+#[cfg(all(feature = "sled", not(feature = "postgres")))]
+type Storage = SledStorageEngine;
+#[cfg(feature = "postgres")]
+type Storage = Postgres;
+
+#[cfg(all(feature = "sled", not(feature = "postgres")))]
+async fn make_storage() -> Result<Storage> {
+    Ok(SledStorageEngine::with_homedir_folder(".ankurah-template")?)
+}
+
+#[cfg(feature = "postgres")]
+async fn make_storage() -> Result<Storage> {
+    // DATABASE_URL is provided by dev.sh (it points at the randomized-port
+    // Postgres container). The fallback is only for running the server directly.
+    let uri = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:ankurah@localhost:5432/ankurah_template".to_string());
+    Ok(Postgres::open(&uri).await?)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init(); // initialize tracing
 
-    // Initialize storage engine
-    let storage = SledStorageEngine::with_homedir_folder(".ankurah-template")?;
+    // Initialize storage engine (Sled or Postgres — see this crate's features)
+    let storage = make_storage().await?;
     let node = Node::new_durable(Arc::new(storage), PermissiveAgent::new());
 
     node.system.wait_loaded().await;
@@ -30,7 +55,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn ensure_general_room(node: &Node<SledStorageEngine, PermissiveAgent>) -> Result<()> {
+async fn ensure_general_room(node: &Node<Storage, PermissiveAgent>) -> Result<()> {
     let context = node.context_async(c).await;
 
     // Query for a room named "General"

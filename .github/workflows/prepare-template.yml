@@ -111,7 +111,11 @@ jobs:
                     | xargs -0 perl -pi -e 's/ankurah-template/{{project-name}}/g'
                   find . -type f -not -path './.git/*' -print0 \
                     | xargs -0 perl -pi -e 's/ankurah_template/{{crate_name}}/g'
+                  # Storage engine choice -> cargo-generate placeholder (Sled default).
+                  perl -pi -e 's/^default = \["sled"\]/default = ["{{ storage }}"]/' server/Cargo.toml
                   git log -1 --pretty=%B dev > /tmp/dev-commit-msg
+                  # akdev is a dev-only helper (patches ankurah to a local checkout).
+                  rm -f akdev
                   rm -rf .github
                   mkdir -p /tmp/prepared
                   rsync -a --delete --exclude '.git/' ./ /tmp/prepared/

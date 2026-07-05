@@ -69,6 +69,20 @@ if [ ${#REGISTRY_KEY} -lt 8 ] || [[ "$REGISTRY_KEY" == *[!0-9a-f]* ]]; then
 fi
 REGISTRY_FILE="$REGISTRY_DIR/$REGISTRY_KEY"
 
+# --- Storage engine (Sled default; Postgres runs in a Docker container) ----
+# The server crate's default feature encodes the choice made at `cargo generate`
+# time; read it back so a Postgres project brings its database up automatically.
+# The container's host port is randomized too (like the app ports) so multiple
+# checkouts never collide on 5432. Everything below is a no-op for Sled.
+STORAGE_ENGINE="$(grep -oE '^default = \["(sled|postgres)"\]' "$SCRIPT_DIR/server/Cargo.toml" 2>/dev/null | grep -oE 'sled|postgres' | head -1)"
+STORAGE_ENGINE="${STORAGE_ENGINE:-sled}"
+PG_PORT=""
+PG_CONTAINER="ankurah-template-pg-$REGISTRY_KEY"
+PG_IMAGE="postgres:16"
+PG_USER="postgres"
+PG_PASSWORD="ankurah"
+PG_DB="ankurah_template"
+
 # --- Registry + status helpers -------------------------------------------
 register_instance() {
     # *_PORT keys map to unit names by lowercased prefix (SERVER_PORT -> server,
@@ -78,6 +92,8 @@ DIR=$SCRIPT_DIR
 PID=$1
 SERVER_PORT=$SERVER_PORT
 REACT_PORT=$REACT_PORT
+PG_PORT=$PG_PORT
+STORAGE_ENGINE=$STORAGE_ENGINE
 STARTED=$(date +%s)
 EOF
 }
@@ -162,6 +178,15 @@ random_even_port() {
     echo $(( PORT_RANGE_MIN + (RANDOM % span) * 2 ))
 }
 
+# Single-port availability check (the Postgres container needs one host port).
+port_available() {
+    if command -v node >/dev/null 2>&1; then
+        node -e "const net=require('net');const s=net.createServer();s.once('error',()=>process.exit(1));s.once('listening',()=>s.close(()=>process.exit(0)));s.listen($1,'0.0.0.0');" >/dev/null 2>&1
+    else
+        ! tcp_open "$1"
+    fi
+}
+
 # Propagate to subprocesses: the server binds SERVER_PORT; Vite serves REACT_PORT
 # (VITE_PORT) and proxies /ws to the backend (VITE_SERVER_PORT).
 export_ports() {
@@ -192,6 +217,68 @@ select_ports() {
     fi
     printf 'SERVER_PORT=%s\nREACT_PORT=%s\n' "$SERVER_PORT" "$REACT_PORT" > "$PORTS_FILE"
     export_ports
+}
+
+# --- Postgres container lifecycle (no-op unless STORAGE_ENGINE=postgres) ------
+# Pick (and stick) a randomized host port for the container, and export the
+# DATABASE_URL the server reads. Kept out of select_ports so Sled is untouched.
+select_pg_port() {
+    [ "$STORAGE_ENGINE" = "postgres" ] || return 0
+    PG_PORT="$(get_file_value "$PORTS_FILE" PG_PORT)"
+    if [ -z "$PG_PORT" ] || ! port_available "$PG_PORT"; then
+        PG_PORT=""
+        local i p
+        for i in $(seq 1 "$MAX_PORT_ATTEMPTS"); do
+            p="$(random_even_port)"
+            if [ "$p" != "$SERVER_PORT" ] && [ "$p" != "$REACT_PORT" ] && port_available "$p"; then
+                PG_PORT="$p"; break
+            fi
+        done
+        [ -z "$PG_PORT" ] && { echo -e "${RED}Error: could not find a free port for Postgres${NC}" >&2; exit 1; }
+    fi
+    # Persist alongside the app ports (keep SERVER_PORT/REACT_PORT, refresh PG_PORT).
+    { grep -v '^PG_PORT=' "$PORTS_FILE" 2>/dev/null || true; printf 'PG_PORT=%s\n' "$PG_PORT"; } \
+        > "$PORTS_FILE.tmp" && mv -f "$PORTS_FILE.tmp" "$PORTS_FILE"
+    export PG_PORT DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@localhost:$PG_PORT/$PG_DB"
+}
+
+# Bring up (or reuse) the project's Postgres container and wait until it's ready.
+pg_up() {
+    [ "$STORAGE_ENGINE" = "postgres" ] || return 0
+    require_command docker "Install Docker: https://docs.docker.com/get-docker/"
+    echo -e "${BLUE}[postgres]${NC} Starting container on port $PG_PORT..."
+    update_status postgres "starting: docker"
+    if [ -z "$(docker ps -q -f "name=^${PG_CONTAINER}$" 2>/dev/null)" ]; then
+        docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+        if ! docker run -d --name "$PG_CONTAINER" \
+                -p "$PG_PORT:5432" \
+                -e "POSTGRES_USER=$PG_USER" \
+                -e "POSTGRES_PASSWORD=$PG_PASSWORD" \
+                -e "POSTGRES_DB=$PG_DB" \
+                "$PG_IMAGE" >/dev/null; then
+            update_status postgres "failed: docker run"
+            echo -e "${RED}✗ Failed to start Postgres container${NC}" >&2
+            exit 1
+        fi
+    fi
+    local i=0
+    until docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; do
+        i=$((i + 1))
+        if [ "$i" -gt 60 ]; then
+            update_status postgres "failed: not ready"
+            echo -e "${RED}✗ Postgres did not become ready in time${NC}" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    update_status postgres "ready"
+    echo -e "${GREEN}✓${NC} Postgres ready on port $PG_PORT"
+}
+
+# Remove the project's Postgres container (dev data is ephemeral by design).
+pg_down() {
+    [ "$STORAGE_ENGINE" = "postgres" ] || return 0
+    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 }
 
 format_elapsed() {
@@ -319,6 +406,7 @@ do_start() {
             rm -f "$PID_FILE" "$REGISTRY_FILE"
             clear_all_status || true
             stop_children
+            pg_down
             # Reap anything still in our process group (incl. grandchildren).
             # NOTE: we deliberately do NOT `pkill -f "ankurah-template-server"`
             # here — a name/cmdline match is a footgun (it also kills editors,
@@ -428,6 +516,7 @@ show_status() {
     local started now elapsed pid
     SERVER_PORT="$(get_file_value "$REGISTRY_FILE" SERVER_PORT)"
     REACT_PORT="$(get_file_value "$REGISTRY_FILE" REACT_PORT)"
+    PG_PORT="$(get_file_value "$REGISTRY_FILE" PG_PORT)"
     started="$(get_file_value "$REGISTRY_FILE" STARTED)"
     started="${started:-$(date +%s)}"
     now="$(date +%s)"
@@ -440,6 +529,9 @@ show_status() {
     echo -e "  ${DIM}Server:${NC}    ${CYAN}http://127.0.0.1:$SERVER_PORT${NC} ($(status_line server))"
     echo -e "  ${DIM}React:${NC}     ${CYAN}http://localhost:$REACT_PORT${NC} ($(status_line react))"
     echo -e "  ${DIM}WASM:${NC}      $(status_line wasm)"
+    if [ "$STORAGE_ENGINE" = "postgres" ]; then
+        echo -e "  ${DIM}Postgres:${NC}  ${CYAN}localhost:${PG_PORT}${NC} ($(status_line postgres))"
+    fi
     echo -e "  ${DIM}PID:${NC}       $pid"
     echo -e "  ${DIM}Started:${NC}   $(format_elapsed "$elapsed")"
     echo -e "  ${DIM}Log:${NC}       $LOG_FILE"
@@ -461,9 +553,15 @@ cmd_start() {
     echo -e "${BOLD}Starting ankurah-template dev environment${NC}"
     echo ""
     select_ports
-    echo -e "  ${DIM}Ports:${NC} server=$SERVER_PORT  react=$REACT_PORT  ${DIM}(randomized; sticky in .dev-ports)${NC}"
+    select_pg_port
+    if [ "$STORAGE_ENGINE" = "postgres" ]; then
+        echo -e "  ${DIM}Ports:${NC} server=$SERVER_PORT  react=$REACT_PORT  postgres=$PG_PORT  ${DIM}(randomized; sticky in .dev-ports)${NC}"
+    else
+        echo -e "  ${DIM}Ports:${NC} server=$SERVER_PORT  react=$REACT_PORT  ${DIM}(randomized; sticky in .dev-ports)${NC}"
+    fi
     echo ""
 
+    pg_up
     do_preflight
     echo -e "${BLUE}[start]${NC} Launching supervisor (server + wasm watcher + react)..."
     do_start
@@ -478,6 +576,7 @@ cmd_start() {
 cmd_stop() {
     if ! check_running; then
         clear_all_status || true
+        pg_down
         rm -f "$REGISTRY_FILE" "$PID_FILE"
         echo -e "${YELLOW}No running instance for this project${NC}"
         exit 0
@@ -486,6 +585,7 @@ cmd_stop() {
     pid="$(cat "$PID_FILE")"
     echo -e "Stopping ankurah-template dev environment (PID $pid)..."
     kill_process_group "$pid"
+    pg_down
     rm -f "$PID_FILE"
     unregister_instance
     echo -e "${GREEN}✓ Stopped${NC}"
