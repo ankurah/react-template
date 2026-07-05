@@ -1,117 +1,149 @@
 #! /bin/bash
 
-# Manage local ankurah development dependencies
+# Manage local ankurah development dependencies via [patch.crates-io].
+#
 # Commands:
-#   enable  - Use local ankurah repo via cargo patch
-#   disable - Use published ankurah crates
-#   bump <version> - Update all ankurah/ankql deps to specified version
-#   (no arg) - Show current status
+#   enable                          Patch to the local repo at ../ankurah (default)
+#   enable --git [URL] --branch B   Patch to a git branch (URL defaults to the public ankurah repo)
+#   enable --git [URL] --rev SHA    Patch to a git revision
+#   enable --git [URL] --tag TAG    Patch to a git tag
+#   enable --pr N                   Patch to PR N's head (branch + fork URL resolved via gh)
+#   disable                         Use published ankurah crates
+#   bump <version>                  Pin all ankurah/ankql deps to <version>
+#   (no arg)                        Show status
+#
+# The git forms don't touch your ../ankurah checkout and pin reproducibly — handy
+# for trialling a PR. The patch is written to .cargo/config.toml (gitignored).
 
 set -euo pipefail
 
-mkdir -p .cargo
-touch .cargo/config.toml
-
 CONFIG_FILE=".cargo/config.toml"
-PATCH_CONTENT='[patch.crates-io]
-ankurah = { path = "../ankurah/ankurah" }
-ankql = { path = "../ankurah/ankql" }
-ankurah-proto = { path = "../ankurah/proto" }
-ankurah-signals = { path = "../ankurah/signals" }
-ankurah-websocket-server = { path = "../ankurah/connectors/websocket-server" }
-ankurah-websocket-client = { path = "../ankurah/connectors/websocket-client" }
-ankurah-websocket-client-wasm = { path = "../ankurah/connectors/websocket-client-wasm" }
-ankurah-storage-indexeddb-wasm = { path = "../ankurah/storage/indexeddb-wasm" }
-ankurah-storage-sled = { path = "../ankurah/storage/sled" }
-ankurah-storage-postgres = { path = "../ankurah/storage/postgres" }'
+DEFAULT_GIT_URL="https://github.com/ankurah/ankurah"
+ANKURAH_REPO="ankurah/ankurah"
+
+mkdir -p .cargo
+touch "$CONFIG_FILE"
+
+# One line per patched crate: "<crate-name>|<path-relative-to-../ankurah>".
+# The path is used only by the local-path patch; the git patch resolves crates
+# by name within the repo.
+ANKURAH_CRATES='ankurah|ankurah
+ankql|ankql
+ankurah-proto|proto
+ankurah-signals|signals
+ankurah-websocket-server|connectors/websocket-server
+ankurah-websocket-client|connectors/websocket-client
+ankurah-websocket-client-wasm|connectors/websocket-client-wasm
+ankurah-storage-indexeddb-wasm|storage/indexeddb-wasm
+ankurah-storage-sled|storage/sled
+ankurah-storage-postgres|storage/postgres'
+
+strip_patch() {
+    # Remove an existing [patch.crates-io] block (header -> next blank line/EOF)
+    # plus trailing blank lines. No-op if absent. Leaves other config intact.
+    local tmp; tmp="$(mktemp)"
+    sed '/^\[patch.crates-io\]/,/^[[:space:]]*$/d' "$CONFIG_FILE" \
+        | sed -e :a -e '/^\n*$/N;/\n$/ba' -e 'P;D' > "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+}
+
+build_patch() {
+    # $1 = mode (path|git); for git: $2=url $3=refkey(branch|rev|tag) $4=refval
+    local mode="$1" name path
+    echo "[patch.crates-io]"
+    while IFS='|' read -r name path; do
+        [ -z "$name" ] && continue
+        if [ "$mode" = "path" ]; then
+            printf '%s = { path = "../ankurah/%s" }\n' "$name" "$path"
+        else
+            printf '%s = { git = "%s", %s = "%s" }\n' "$name" "$2" "$3" "$4"
+        fi
+    done <<EOF
+$ANKURAH_CRATES
+EOF
+}
+
+write_patch() {
+    strip_patch
+    printf '\n%s\n' "$(build_patch "$@")" >> "$CONFIG_FILE"
+}
 
 show_status() {
-    if grep -q "\[patch.crates-io\]" "$CONFIG_FILE"; then
-        echo "Status: ENABLED - Using local ankurah dependencies"
+    if grep -q "^\[patch.crates-io\]" "$CONFIG_FILE"; then
+        echo "Status: ENABLED"
+        grep -m1 "^ankurah = " "$CONFIG_FILE" | sed 's/^/  /'
     else
         echo "Status: DISABLED - Using published ankurah crates"
     fi
 }
 
-show_usage() {
-    echo "Usage: $0 [command]"
-    echo ""
-    echo "Commands:"
-    echo "  enable         - Use local ankurah dependencies"
-    echo "  disable        - Use published ankurah crates"
-    echo "  bump [version] - Update all ankurah/ankql deps (default: from ../ankurah/RELEASES)"
-    echo "  (no arg)       - Show current status"
-    echo ""
-}
-
 do_bump() {
     local version="$1"
     echo "Updating ankurah/ankql dependencies to version $version"
-
-    # Find all Cargo.toml files in the workspace (excluding target/node_modules)
-    local manifests=$(find . -name "Cargo.toml" -not -path "./target/*" -not -path "*/node_modules/*" -type f)
-
+    local manifests; manifests=$(find . -name "Cargo.toml" -not -path "./target/*" -not -path "*/node_modules/*" -type f)
     for manifest in $manifests; do
-        # Skip root workspace Cargo.toml
         [[ "$manifest" == "./Cargo.toml" ]] && continue
-        
-        # Check if this manifest has ankurah or ankql dependencies
         if grep -qE "^ankurah|^ankql" "$manifest" 2>/dev/null; then
-            # Update inline version: ankurah* = "x.y.z" -> ankurah* = "=new_version"
             sed -i '' -E "s/(ankurah[a-z0-9_-]*[[:space:]]*=[[:space:]]*\")[^\"]+\"/\1=$version\"/g" "$manifest"
             sed -i '' -E "s/(ankql[[:space:]]*=[[:space:]]*\")[^\"]+\"/\1=$version\"/g" "$manifest"
-            
-            # Update table version: ankurah* = { version = "x.y.z" } -> ankurah* = { version = "=new_version" }
             sed -i '' -E "s/(ankurah[a-z0-9_-]*[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*\")[^\"]+\"/\1=$version\"/g" "$manifest"
             sed -i '' -E "s/(ankql[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*\")[^\"]+\"/\1=$version\"/g" "$manifest"
-            
             echo "  Updated: $manifest"
         fi
     done
-
     echo "Done. Run 'cargo check' to verify."
 }
 
-if [ "${1:-}" = "enable" ]; then
-    # Check if patch section already exists
-    if grep -q "\[patch.crates-io\]" "$CONFIG_FILE"; then
-        echo "Patch section already exists in $CONFIG_FILE"
-        exit 0
-    fi
-    
-    # Add patch section
-    echo -e "\n$PATCH_CONTENT" >> "$CONFIG_FILE"
-    echo "Enabled local ankurah dependencies in $CONFIG_FILE"
-
-elif [ "${1:-}" = "disable" ]; then
-    # Create temporary file
-    TMP_FILE=$(mktemp)
-    
-    # Remove patch section and strip trailing blank lines
-    sed '/^\[patch.crates-io\]/,/^[[:space:]]*$/d' "$CONFIG_FILE" | sed -e :a -e '/^\n*$/N;/\n$/ba' -e 'P;D' > "$TMP_FILE"
-    
-    # Move temporary file back to original
-    mv "$TMP_FILE" "$CONFIG_FILE"
-    echo "Disabled local ankurah dependencies in $CONFIG_FILE"
-
-elif [ "${1:-}" = "bump" ]; then
-    if [ -z "${2:-}" ]; then
-        # Get version from local ankurah RELEASES file
-        if [ -f "../ankurah/RELEASES" ]; then
-            version=$(head -n 1 ../ankurah/RELEASES | cut -d' ' -f1)
-            echo "Using version $version from ../ankurah/RELEASES"
-        else
-            echo "Error: bump requires a version argument (or ../ankurah/RELEASES must exist)"
-            echo "Usage: $0 bump [version]"
-            exit 1
-        fi
+cmd_enable() {
+    shift  # drop "enable"
+    local mode="path" url="$DEFAULT_GIT_URL" refkey="" refval=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --git)
+                mode="git"
+                if [ $# -gt 1 ] && [ "x${2#--}" = "x$2" ]; then url="$2"; shift; fi
+                ;;
+            --branch) mode="git"; refkey="branch"; refval="${2:?--branch needs a value}"; shift ;;
+            --rev)    mode="git"; refkey="rev";    refval="${2:?--rev needs a value}";    shift ;;
+            --tag)    mode="git"; refkey="tag";    refval="${2:?--tag needs a value}";    shift ;;
+            --pr)
+                mode="git"; refkey="branch"
+                local pr="${2:?--pr needs a number}"; shift
+                local info owner repo
+                info="$(gh pr view "$pr" --repo "$ANKURAH_REPO" --json headRefName,headRepositoryOwner,headRepository -q '.headRefName+" "+.headRepositoryOwner.login+" "+.headRepository.name')"
+                read -r refval owner repo <<< "$info"
+                url="https://github.com/$owner/$repo"
+                ;;
+            *) echo "Unknown enable option: $1" >&2; exit 1 ;;
+        esac
+        shift
+    done
+    if [ "$mode" = "git" ] && [ -z "$refkey" ]; then refkey="branch"; refval="main"; fi
+    write_patch "$mode" "$url" "$refkey" "$refval"
+    if [ "$mode" = "path" ]; then
+        echo "Enabled local path patch (../ankurah) in $CONFIG_FILE"
     else
-        version="$2"
+        echo "Enabled git patch in $CONFIG_FILE:  $url  ($refkey = $refval)"
     fi
-    do_bump "$version"
+}
 
-else
-    show_status
-    echo ""
-    show_usage
-fi
+case "${1:-}" in
+    enable)  cmd_enable "$@" ;;
+    disable) strip_patch; echo "Disabled local ankurah dependencies in $CONFIG_FILE" ;;
+    bump)
+        if [ -z "${2:-}" ]; then
+            if [ -f "../ankurah/RELEASES" ]; then
+                version=$(head -n 1 ../ankurah/RELEASES | cut -d' ' -f1)
+                echo "Using version $version from ../ankurah/RELEASES"
+            else
+                echo "Error: bump requires a version argument (or ../ankurah/RELEASES must exist)" >&2
+                exit 1
+            fi
+        else
+            version="$2"
+        fi
+        do_bump "$version"
+        ;;
+    ""|status) show_status ;;
+    *) echo "Unknown command: $1" >&2; show_status; exit 1 ;;
+esac
