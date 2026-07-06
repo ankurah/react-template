@@ -5,7 +5,7 @@ A simple real-time chat application built with Ankurah, demonstrating distribute
 ## Features
 
 - Real-time message synchronization
-- Persistent storage (Sled on server, IndexedDB in browser)
+- Persistent storage (Sled or Postgres on the server, IndexedDB in browser)
 - Automatic user creation with localStorage persistence
 - WebSocket-based peer communication
 - Reactive UI updates
@@ -13,9 +13,17 @@ A simple real-time chat application built with Ankurah, demonstrating distribute
 ## Architecture
 
 - **model/** - Shared data models (User, Room, Message)
-- **server/** - Rust server with Sled storage and WebSocket connector
+- **server/** - Rust server (Sled or Postgres storage) and WebSocket connector
 - **wasm-bindings/** - WASM bindings exposing Ankurah to JavaScript
 - **react-app/** - React frontend application
+
+## Storage engine
+
+The durable server node stores data in **Sled** by default. Generate the project
+with `--define storage=postgres` (or choose Postgres at the prompt) to back it
+with **Postgres** instead; the bundled `./dev.sh` then brings up a Postgres
+container automatically on a randomized port. Both paths are wired through the
+`sled` / `postgres` features in `server/Cargo.toml`.
 
 ## Quick Start
 
